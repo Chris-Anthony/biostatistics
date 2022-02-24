@@ -1,0 +1,208 @@
+---
+title: 'Homework 11: Survival Curves'
+author: "Christian Chua"
+date: "`r date()`"
+output:
+  html_document:
+    fig_caption: yes
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+fig.dim <- 4
+knitr::opts_chunk$set(fig.width=2*fig.dim,
+                      fig.height=fig.dim,
+                      fig.align='center',
+                      warning=FALSE)
+set.seed(42)
+library(tidyverse)
+library(brms)
+library(survival)
+library(rstan)
+library(StanHeaders)
+library(matrixStats)
+options(mc.cores = parallel::detectCores())
+```
+
+# Introduction
+
+Here, we will perform a survival analysis of the ```veteran``` dataset with the survival times for lung cancer patients provided in the ```survival``` package. The professor is interested in knowing if there are any variables that are indicative of longer survival times. In particular, he is interested in knowing whether the experimental chemotherapy treatment has a significant effect compared to the standard one. 
+
+# Data
+
+The dataset contains the survival times (in days) and associated metadata (cell type, censoring status, Karnofsky performance score, months from diagnosis to treatment assignment, age and prior therapy) of 137 males with advanced lung cancer that cannot be removed through surgery. They were assigned to either a standard or experimental chemotherapy. 
+
+We first explored the data by plotting the survival times by treatment (Figure 1). 
+
+```{r veteran_ds, echo=FALSE}
+data(veteran)
+
+levels(veteran$celltype)[levels(veteran$celltype) == "squamous"] <- "1"
+levels(veteran$celltype)[levels(veteran$celltype) == "smallcell"] <- "2"
+levels(veteran$celltype)[levels(veteran$celltype) == "adeno"] <- "3"
+levels(veteran$celltype)[levels(veteran$celltype) == "large"] <- "4"
+
+veteran$trt <- as.factor(veteran$trt)
+
+plot(time ~ trt, data=veteran, xaxt="n", xlab="", ylab="Time (in days)", main="Figure 1. Box Plot of Survival Time By Treatment", col=c(rgb(0,0,1,0.5),rgb(1,0,0,0.5)))
+axis(1, at=1:2, labels=c("standard", "test"), las = 2, cex.axis = 1)
+```
+It appears that the survival times for patients treated with the experimental method had on average a lower survival time than patients treated normally. There are more outliers with the experimental treatment. However, the distributions for both sets appear similar with a peak around 100 with a long right tail. 
+
+We then plotted the survival time against the cell type to see if the other metadata follow similar trends (Figure 2). 
+
+```{r plot2, echo=FALSE}
+plot(time ~ celltype, data=veteran, xaxt="n", xlab="", ylab="Time (in days)", main="Figure 2. Box Plot of Survival Time By Lung Cancer Cell Type", col=c(rgb(0,1,0,0.5),rgb(0,0,1,0.5),rgb(1,0,0,0.5),rgb(1,1,1,0.5)))
+axis(1, at=1:4, labels=c("squamous", "smallcell", "adeno", "large"), las = 2, cex.axis = 1)
+```
+It appears that there is more variation in survival time between cell types than what we saw with treatment. To explicitly determine the significance of the variables treatment, cell type, karnosfsky score, diagnosis time, age and prior thearapy on survival time, we will compare different Cox models using ANOVA.
+
+# Survival Analysis
+
+## Nonparametric
+
+A Cox model is a regression model expressed with the hazard function that allows us to evaluate the effect of several different factors on the survival time. First, we included every factor for which we have data. It is important to note that cell type is discrete and the data was factorized. 
+
+```{r Cox Model, echo=FALSE}
+fullcox_veteran <- coxph(Surv(time, status) ~ trt + celltype + karno + diagtime + age + prior, data=veteran)
+summary(fullcox_veteran)
+```
+Even though the p-value for the likelihood ratio test, wald test and score (logrank) test are signficant (p-value < 0.05), no every covariate in the model is significant. Only cell type and the karnofsky score have a p-value less than 0.05. Interestingly, treatment is not considered signficant. We performed an ANOVA to compare this Cox model and a simplified Cox model that only looks at cell type and karnofsky score. 
+
+```{r subcox model, echo=FALSE}
+subcox_veteran <- coxph(Surv(time, status) ~ celltype + karno, data=veteran)
+anova(subcox_veteran, fullcox_veteran)
+```
+The ANOVA results tells us that there is no signficant difference between the two models (p-value > 0.05) and that the simplified Cox model is just as good at modeling the data as the full version. However, we saw from the boxplot that there were some individuals with much higher survival times in the experimental group than the normal treatment group. This may be due to the interaction effects between treatment and the cancer subtype. Maybe the treatment is only effective on certain subtypes. We again perform an ANOVA to test this.
+
+```{r subcox model 2, echo=FALSE}
+subcox_veteran_2 <- coxph(Surv(time, status) ~ celltype * trt + karno, data=veteran)
+anova(subcox_veteran, subcox_veteran_2)
+```
+
+Including treatment did not increase the predictive power of the Cox model. With the simplified  accounting for only cell type and karnofsky score, we can visualize the predicted survival probability for different times. 
+
+
+```{r Survival Curve, echo=FALSE}
+plot(survfit(subcox_veteran), main="Figure 3. Survival Time As A Cox Model of Cell Type and Karnofsky Score", xlab="Time (in days)", ylab = "Survival Probability")
+```
+The probability of surviving follows a logrithmic decay. At about day 600, the probability is constant albeit very, very low. We can also view the harzard rate over time. 
+
+```{r Harzard Rate, echo=FALSE}
+plot(survfit(subcox_veteran), main="Figure 4. Hazard Rate As A Cox Model of Cell Type and Karnofsky Score", xlab="Time (in days)", ylab = "Survival Probability", log=TRUE, conf.int=TRUE)
+```
+There is a gradual decrease in the probability of surviving starting at 50% from day 0 to day 600. It should be noted that the y-axis is on a log-scale so the decrease in probability is logrithmic. From day 600 to about 1000, there is a constant probability of surviving. At day 1000, there is a very steep decrease towards 0% in the probability of surviving.
+
+We then can look at how the survival curve depends on each factor individually. For the cell type, we assumed a karnofsky score of 80 (Figure 4).
+
+```{r Survival Curve by Cell Type, echo=FALSE}
+subcox_pred_celltype <- survfit(subcox_veteran, newdata = expand.grid(celltype=c("1", "2", "3", "4"), karno = 80))
+
+plot(subcox_pred_celltype, col=1:4, main='Figure 5. Predicted Survival By Cell Type', conf.int=TRUE, xlab="Time (in days)", ylab = "Survival Probability")
+legend("topright", lty=c(1,1,1,1,2), col=1:4, legend=paste(c("squamous", "smallcell", "adeno", "large", "95% conf int")))
+```
+There is clear separation in the survival times between cell types. Patients with the squamous lung cancer subtype live have the highest probability of surviving at all time points, whereas patients with the adeno subtype have the lowest. At day 1000, the survival probability for all subtype drop precipitously to zero. It should be noted that the 95% confidence interval for the different categories overlap. 
+
+However, the same method cannot be used for the Karnofsky score as it is not discrete. Instead, we will need to change our model to be parametric.
+
+## Parametric
+
+We can also do parametric survival analysis in two ways using a maximum likelihood approach with the ```survival``` package or a Baysian approach using a Stan model. Since this is a survival time analysis, we will use a Weibull distribution to describe the lifetimes. 
+
+```{r ML, echo=FALSE}
+
+weifit <- survreg(Surv(time, status) ~ trt + celltype + karno + diagtime + age + prior, data=veteran, dist="weibull")
+
+summary(weifit)
+```
+Similarly to the Cox Model, the maximum likelihood model tells us that only the cell type and karnofsky score are signficant (p-value < 0.05).
+
+We used the ```brm``` function to fit a bayesian model. 
+
+```{r Baysian, echo=FALSE}
+veteran$censored <- ifelse(veteran$status == 0, "right", "none")
+
+brmfit <- brm(time | cens(censored) ~ trt + celltype + karno + diagtime + age + prior, data = veteran, family = "weibull")
+
+summary(brmfit)
+```
+
+We see that the R-hat value was close to one indicating that there was sufficient mxiing between chains in each iteration and the results converged.
+
+Next, we want to look at the conditional effects of treatment, cell type, or Karnofsky score on survival time. We assumed mean values for the other variables.
+
+```{r condition_effect_1, echo=FALSE}
+conditional_effects(brmfit, effects = 'trt')
+```
+It appears that the experimental chemotherapy has a deletrious effect on the mean survival time. However, the means for each group are within each other's confidence interval. 
+
+```{r condition_effect_2, echo=FALSE}
+conditional_effects(brmfit, effects='celltype')
+```
+As we saw from the Cox Model, there are drastic changes in the mean survival times between cancer subtypes with the squamous group living the longest and the adeno group the shortest. 
+
+```{r condition_effect_3, echo=FALSE}
+conditional_effects(brmfit, effects = 'karno')
+```
+
+Unlike the Cox Model, the bayesian model allowed us to plot the survival time as a function of the karnosky score. With a greater karnofsky score, the longer the survival time. It appears the survival time follows an gentle exponential curve against the score. Of note is that the confidence interval shrinks with a decreasing score. There is wide variation in survival times with a karnofsky score of 100. 
+
+If we look at the posterior predictive check, we can see that the real data is mostly within the 50% and 90% posterior ranges. 
+
+```{r posterior check, echo=FALSE}
+pp_check(brmfit, type="intervals", subset=TRUE)
+```
+We can also view the overlap of the survival curves generated by samples from the posterior predictive distribution for treatment and for cell types. The Posterior Predictive Distribution gives us values that we did not observed based on the values we did observed. 
+
+```{r posterior sampling 1, echo=FALSE}
+op <- par(no.readonly = TRUE)
+
+par(mfrow=c(1,2))
+
+post_means <- posterior_epred(brmfit, newdata=data.frame(trt=1:2, celltype=1, karno=80, diagtime=4, age=65, prior=0), re_formula=NA, dpar="mu")[1:100,]
+post_shape <- posterior_epred(brmfit, newdata=data.frame(trt=1:2, celltype=1, karno=80, diagtime=4, age=65, prior=0), re_formula=NA, dpar="shape")[1:100,]
+tvals <- seq(0, 2000, length.out=101)
+Svals <- array(NA, dim=c(length(tvals), nrow(post_means), ncol(post_means)))
+for (k in 1:nrow(post_means)) {
+    lambda <- post_means[k,] / gamma(1 + 1/post_shape[k,])
+    for (j in 1:ncol(post_means)) {
+        Svals[,k,j] <- exp(- (tvals / lambda[j])^post_shape[k,j])
+    }
+}
+for (j in 1:dim(Svals)[3]) {
+    plot(tvals, rowMeans(Svals[,,j]), lty=1, ylim=c(0,1), type='l', xlab='time (t)', ylab='S(t)', col=j, main=paste("Treatment =", j))
+    matlines(tvals, Svals[,,j], type='l', col=adjustcolor(j, 0.25), lty=1)
+    abline(v=1000, lty=3)
+}
+
+```
+The distribution of survival curves for each treatment overlap and are practically the same. The only difference is that there are slightly more distributions that decay faster in treatment 2, the experimental chemotherapy, than treatment 1.
+
+```{r posterior sampling 2, echo=FALSE}
+post_means <- posterior_epred(brmfit, newdata=data.frame(trt=1, celltype=1:4, karno=80, diagtime=4, age=65, prior=0), re_formula=NA, dpar="mu")[1:100,]
+post_shape <- posterior_epred(brmfit, newdata=data.frame(trt=1, celltype=1:4, karno=80, diagtime=4, age=65, prior=0), re_formula=NA, dpar="shape")[1:100,]
+tvals <- seq(0, 2000, length.out=101)
+Svals <- array(NA, dim=c(length(tvals), nrow(post_means), ncol(post_means)))
+for (k in 1:nrow(post_means)) {
+    lambda <- post_means[k,] / gamma(1 + 1/post_shape[k,])
+    for (j in 1:ncol(post_means)) {
+        Svals[,k,j] <- exp(- (tvals / lambda[j])^post_shape[k,j])
+    }
+}
+for (j in 1:dim(Svals)[3]) {
+    plot(tvals, rowMeans(Svals[,,j]), lty=1, ylim=c(0,1), type='l', xlab='time (t)', ylab='S(t)', col=j, main=paste("Cell Type =", j-1))
+    matlines(tvals, Svals[,,j], type='l', col=adjustcolor(j, 0.25), lty=1)
+    abline(v=1000, lty=3)
+}
+
+par <- op
+
+```
+
+These distributions also confirm the gradual decline in survival probability for cell type 1, squamous subtype, and the fast decline for cell type 3, adeno subtype. 
+
+# Conclusion
+
+Even though the Cox Model makes less assumptions than either the maximum likelihood or bayesian models, both the nonparametric and parametric models came to the same conclusion that there is no significant difference in survival times between treatment groups. More shockingly is that the bayesian model suggests that the experimental treatment may be detrimental to patient health. It is surprising that there more outliers in the experimental group and there may be some correlation effect between treatment and an unknown component within that patient cohort such as the patient genetic makeup or the tumor's genetic makeup. More metadata information will be needed to perform that analysis.
+
+On the other hand, survival times do correlate with cell type and even more strongly with karnofsky score. In fact, the probability of survival was two to three times greater for the squamous subtype versus the adeno subtype. Patients with a higher karnofsky score had a higher probability of survival, but with more variance in time. As the karnofsky score decrease, the survival time decreased aas well as its variance. However, at day 1000, there were no survivors across the board. 

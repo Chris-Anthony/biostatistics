@@ -1,0 +1,239 @@
+---
+title: 'Homework 2: ANOVA'
+author: "Christian Chua"
+date: "`r date()`"
+output:
+    html_document:
+        fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+fig.dim <- 6 
+knitr::opts_chunk$set(echo=FALSE,
+                      fig.width=2*fig.dim,
+                      fig.height=fig.dim,
+                      fig.align='center')
+# set the random seed, so that you get exactly the same
+# output from random functions each time you run the code
+set.seed(23)
+library(matrixStats)
+```
+
+# Introduction
+
+We were given the PanTHERIA dataset from the [Ecological Archives](https://web.archive.org/web/20200326111744/http://esapubs.org/archive/ecol/E090/184/metadata.htm). The dataset contains numerous data points, such as activity cycle, body mass, growth data, litter size, ranging behavior, etc., on extant or recently extinct species within the class Mammalia across the global. We are interested in examining whether adult body mass varies between trophic levels (carnivore, herbivore, or omnivore).
+
+# Hypotheses
+
+Our broad sense hypothesis is that adult body size differs between trophic levels. By extension, the same trend exists within the order Rodentia. We can mesure the difference in the distributions of adult body mass per trophic level using an analysis of varaince ("ANOVA"). For this type of analysis, the null hypothesis is that all distributions of body mass (per trophic level) will have the same mean and variance. 
+
+# Data
+
+Using the ```read_patheria``` function provided in the README.md on talapas, we read in the PanTHERIA dataset and created a subset of the dataset for the order Rodentia. We then explored the data.
+
+```{r, echo=FALSE}
+# function to read in the PanTHERIA dataset
+read_pantheria <- function(dirname) {
+    pantheria <- read.table(file.path(dirname, "PanTHERIA_WR05_mammals.txt"),
+                            header=TRUE, check.names=FALSE, stringsAsFactors=FALSE, sep="\t")
+    names(pantheria) <- gsub("^MSW05_", "", gsub("^[0-9-]*_", "", names(pantheria)))
+    pantheria$Order <- factor(pantheria$Order)
+    pantheria$Family <- factor(pantheria$Family)
+    pantheria$Genus <- factor(pantheria$Genus)
+    translations <- list(ActivityCycle = c("nocturnal", "crepuscular", "diurnal"),
+                         Terrestriality = c("fossorial", "ground_dwelling"),
+                         TrophicLevel = c("herbivore", "omnivore", "carnivore")) # change order of the list to math the github repo?
+    for (col in names(pantheria)) {
+        a <- pantheria[[col]]
+        if (is.numeric(a)) {
+            a[a == -999] <- NA
+        }
+        if (col %in% names(translations)) {
+            a <- factor(translations[[col]][a], levels=translations[[col]])
+        }
+        pantheria[[col]] <- a
+    }
+    return(pantheria)
+}
+
+PT_dataset <- read_pantheria('C:/Users/chris/Desktop/Bi610/HW/HW2')
+Rodentia_dataset <- subset(PT_dataset, Order=="Rodentia")
+```
+
+### Whole Dataset
+
+We first looked at the number of factors under the "Trophic Level" observation. There are three trophic levels, carnivore, herbivore and omnivore. 
+
+```{r}
+levels(PT_dataset$TrophicLevel)
+```
+
+Then, we looked at the summary and box plot of the values under the "Adult Body Mass" observation for the whole dataset (Figure 1). There are several species which do not have a value for "Adult Body Mass" as indicated by the NA's ("not available") in the table. 
+
+```{r}
+summary(PT_dataset$AdultBodyMass_g)
+
+op <- par(no.readonly = TRUE)
+par(mfrow=c(1,2))
+boxplot(PT_dataset$AdultBodyMass_g, ylab="Adult Body Mass (g)", main="Figure 1. Box Plot of Adult Body Mass")
+boxplot(log10(PT_dataset$AdultBodyMass_g), ylab="Adult Body Mass (log,grams)", main="Figure 2. Box Plot of Log-transformed Adult Body Mass")
+par(op)
+```
+It appears that the data is skewed right because there are a lot of data points with values many magnitudes greater than the median (Figure 1). In order to perform any statistical analysis which test normality, we would need to transform the data into something similar to a normal distribution. In figure 2, we log-transformed the data using a base of 10. Figure 3 below is the same log-transformed distribution, but delineated by order. 
+
+```{r}
+op <- par(no.readonly = TRUE)
+
+par(mar=c(8, 4, 2, 2) + 0.1)
+categories <- levels(PT_dataset$Order)
+plot(log10(AdultBodyMass_g) ~ Order, data=PT_dataset, xaxt="n", yaxt='n', ylim=c(0,8), xlab="", ylab="Adult Body Mass (log, grams)", main="Figure 3. Box Plot of (Log) Adult Body Mass by Order")
+axis(1, at=1:29, labels=categories, las = 2, cex.axis = 1)
+axis(2, at=1:8, labels=1:8, cex.axis = 1)
+#reset settings
+par(op)
+```
+We then separated the log-transformed distribution by trophic level instead of by order (Figure 4). In additional to box plots, we plotted the distribution as a histogram (Figure 5)
+
+```{r}
+op <- par(no.readonly = TRUE)
+
+par(mar=c(8, 4, 2, 2) + 0.1, mfrow=c(1,2))
+categories <- levels(PT_dataset$TrophicLevel)
+plot(log10(AdultBodyMass_g) ~ TrophicLevel, data=PT_dataset, xaxt="n", yaxt='n', ylim=c(0,8), xlab="", ylab="Adult Body Mass (log, grams)", main="Figure 4. Box Plot of (Log) Adult Body Mass\n by Trophic Level", col=c(rgb(0,1,0,0.5),rgb(0,0,1,0.5),rgb(1,0,0,0.5)))
+axis(1, at=1:3, labels=categories, las = 2, cex.axis = 1)
+axis(2, at=1:8, labels=1:8, cex.axis = 1)
+
+hist(log10(subset(PT_dataset, TrophicLevel=="carnivore")$AdultBodyMass_g), xlim=c(0,9), ylim=c(0, 45), col=rgb(1,0,0,0.5),  breaks=100, xlab='Adult Body Mass (log, grams)', main='Figure 5. Frequency Distribution of (Log) Adult Body\n Mass by Trophic Level')
+hist(log10(subset(PT_dataset, TrophicLevel=="herbivore")$AdultBodyMass_g), col=rgb(0,1,0,0.5), breaks=100, add=T)
+hist(log10(subset(PT_dataset, TrophicLevel=="omnivore")$AdultBodyMass_g), col=rgb(0,0,1,0.5), breaks=100, add=T)
+legend(6, 40, legend=c("carnivore", "herbivore", "omnivore"), col=c("red","green","blue"),lty=1, cex=1.2)
+box()
+
+#reset settings
+par(op)
+```
+It appears that herbivores have a distribution of weights that is shifted right compared to carnivores, while omnivores have a distribution somewhere in between. Note that there are a lot of outliers with big masses for carnivores. 
+
+### Order Rodentia
+
+We then performed the same analyses, but focused on the order Rodentia. 
+
+```{r}
+summary(Rodentia_dataset$AdultBodyMass_g)
+```
+From the summary table, we see the same issue as the whole dataset where the "Adult Body Mass" data needs to be log-transformed in order to be closer to a normal distribution. 
+
+```{r}
+op <- par(no.readonly = TRUE)
+
+par(mar=c(8, 4, 2, 2) + 0.1, mfrow=c(1,2))
+categories <- levels(Rodentia_dataset$TrophicLevel)
+plot(log10(AdultBodyMass_g) ~ TrophicLevel, data=Rodentia_dataset, xaxt="n", yaxt='n', ylim=c(0,5), xlab="", ylab="Adult Body Mass (log, grams)", main="Figure 6. Box Plot of (Log) Adult Body Mass\n by Trophic Level for Order Rodentia", col=c(rgb(0,1,0,0.5),rgb(0,0,1,0.5),rgb(1,0,0,0.5)))
+axis(1, at=1:3, labels=categories, las = 2, cex.axis = 1)
+axis(2, at=1:5, labels=1:5, cex.axis = 1)
+
+hist(log10(subset(Rodentia_dataset, TrophicLevel=="herbivore")$AdultBodyMass_g), col=rgb(0,1,0,0.5), breaks=20, xlab='Adult Body Mass (log, grams)', main='Figure 7. Frequency Distribution of (Log) Adult Body\n Mass by Trophic Level for Order Rodentia')
+hist(log10(subset(Rodentia_dataset, TrophicLevel=="carnivore")$AdultBodyMass_g), col=rgb(1,0,0,0.5), breaks=10, add=T)
+hist(log10(subset(Rodentia_dataset, TrophicLevel=="omnivore")$AdultBodyMass_g), col=rgb(0,0,1,0.5), breaks=20, add=T)
+legend(3.5, 40, legend=c("carnivore", "herbivore", "omnivore"), col=c("red","green","blue"),lty=1, cex=1.2)
+box()
+
+#reset settings
+par(op)
+```
+The trophic level distributions of the log-transformed adult body mass for the order Rodentia are similar to the whole dataset (Figures 6 and 7). Herbivores have the largest median mass followed by omnivores and then carnivores. However, the total and interquartile ranges are smaller for order Rodentia and the entirety of the carnivore distribution is within range of the omnivore distribution. 
+
+# Analysis
+
+To compare the means of the trophic level distributions of the log-transformed adult body mass, we performed an one-way analysis of variance (ANOVA) by fitting the data to a linear model. For our dataset, the categorical predictors are the trophic levels and the response variable is adult body mass. ANOVA examines how much variation exists within groups versus among groups.
+
+### Whole Dataset
+
+```{r}
+#summary(lm(formula = log10(AdultBodyMass_g) ~ TrophicLevel, data = PT_dataset))
+anova(lm(formula = log10(AdultBodyMass_g) ~ TrophicLevel, data = PT_dataset))
+```
+Because the F-value is much larger than 1.0, which is what we would expect if the null hypothesis is true, there is more variation between the trophic levels than what we would expect by chance. Furthermore, the small p-value (< 0.05) indicates that it is unlikely the observed differences between groups is due to random sampling. Therefore, we can reject the null hypothesis that all distributions have the same means and variance. However, there only needs to be at least one comparison of two trophic levels (for example, between herbivores and carnivores) where there is a difference between means of the mass distributions in order to have a signficant F-value. We would need to conduct further analyses to know where the meaningful differences in means between distributions are. 
+
+### Order Rodentia
+
+Similarly, we performed ANOVA for the Rodentia subset.
+
+```{r}
+anova(lm(formula = log10(AdultBodyMass_g) ~ TrophicLevel, data = Rodentia_dataset))
+```
+While we obtained a still significant p-value, the F-value decreased. As we noted from the distribution graphs in the data section, the range (and therefore) variance is much smaller for the Rodentia subset, which would the F-value for similar mean differences between groups. Nonetheless, the F-value is still significant.
+
+# Conclusions
+
+ANOVA results indicate that there are significant differences in the adult body mass between trophic levels for both the whole dataset as well as the order Rodentia subset. This interpretation should be taken with a grain of salt because we made several assumptions in order to perform ANOVA.
+
+Firstly, we assumed that the distributions are normal. Even though we log-transformed the data, the distributions still skew right (Figures 5 and 7). Secondly, we assumed that the variance between distributions are equal. However, this is not true as the standard deviations calculated below for herbivore and carnivore groups within order Rodentia show.
+
+```{r}
+sd(log10(subset(Rodentia_dataset, TrophicLevel=="herbivore")$AdultBodyMass_g), na.rm=T)
+sd(log10(subset(Rodentia_dataset, TrophicLevel=="carnivore")$AdultBodyMass_g), na.rm=T)
+```
+Thirdly, we assumed observations in a group are independent and are not confounded by another factor. Our observations for adult body mass are in fact not independent because species share a different amounts of evolutionary history. Closely related species are more likely to be more similar in diet and/or size, while distantly related species are not. For example, bats (order Chiroptera) are much smaller than whales or dolphins (order Cetacea) whereas we saw within order Rodentia a smaller distribution. Phylogenetic relationships must be taken into consideration in the statistical analysis.
+
+
+This problem of confounding factors arises because the dataset contains observational data. As opposed to experimental data where a variable is measured in response to a change we implement, with observational data we are drawing inferences about a population from one or a few samples. Notably, the values given for adult body mass may not be the true mean for the whole population of that species. Nevertheless, the ANOVA results imply a relationship between diet and body mass specifically that herbivores are heavier than carinvores which will require a more rigorous examination with more controlled variables. 
+
+# Future Directions
+
+A colleague reasons that the differences in mean size seen above is caused by the amount of dietary protein. They hypothesize that mice without access to animal protein will grow larger to same extent as see above. In order to determine the amount of samples needed to test such a hypothesis, we performed a power analysis using simulation.
+
+We artificially generated data for three populations, mice given only animal protein ("carnivores"), mice deprived of animal protein ("herbivores"). and mice given both ("omnivores"), assuming a normal distribution with means (and standard deviation) of 19.3 g (0.6433), 19.92 g (0.6639), and 19.51 g (0.6505) respectively. 
+
+From the PanTHERIA dataset, we found that adult body mass for the common laboratory mouse, *Mus musculus*, is 19.3 g, while they are listed as a carnivore. The differences between trophic level omnivore and carnivores from herbivores in the order Rodentia subset is shown below. We calculated the means for the other trophic levels, herbivore and omnivore, for mice using those mean difference values.  
+
+```{r}
+test <- lm(formula = log10(AdultBodyMass_g) ~ TrophicLevel, data = Rodentia_dataset)
+print(test$coefficients[2])
+print(test$coefficients[3])
+```
+The standard deviation was calculated to be 0.03333 times the mean in order to have 99.73% of the distribution (three standard deviations) be within 10% of the mean (mice vary in size by around 20%). 
+
+Using those three populations, we performed a power analysis. Specifically, we performed ANOVA on subsets of the three populuations 100 times for each sampling size between 1 and 50. For each sampling size, power is calculated as the percentage of the replicates where the ANOVA p-value result is significant (< 0.05).
+
+```{r, message=FALSE, warning=FALSE}
+nvals_model <- 1 * 1:50
+nreps_model <- 100
+
+mean_carn <- 19.3
+mean_herb <- mean_carn + 0.617512 
+mean_omni <- mean_herb - 0.4040118
+
+anova_model_dist <- matrix(NA, nrow=nreps_model, ncol=length(nvals_model))
+
+model_dist <- function(N){
+    dist_carn <- abs(rnorm(N, mean=mean_carn, sd=0.0333333*mean_carn))
+    dist_herb <- abs(rnorm(N, mean=mean_herb, sd=0.0333333*mean_herb))
+    dist_omni <- abs(rnorm(N, mean=mean_herb, sd=0.0333333*mean_omni))
+    
+    DF <- data.frame(
+        AdultBodyMass_g = c(dist_carn, dist_herb, dist_omni),
+        TrophicLevel = c(rep("carnivore", length(dist_carn)),
+                         rep("herbivore", length(dist_herb)),
+                         rep("omnivore", length(dist_omni)))
+    )
+    
+    model_pop <- lm(formula = log10(AdultBodyMass_g) ~ TrophicLevel, data = DF)
+    return(model_pop)
+}
+
+for (j in seq_along(nvals_model)){
+  m <- nvals_model[j]
+  anova_model_dist[,j] <- replicate(nreps_model, anova(model_dist(m))$`Pr(>F)`[1])
+}
+
+plot(nvals_model, colMeans(anova_model_dist < 0.05),
+     xlab="sample size",
+     ylab="percentage of experiments with Pr(>F) < 0.05",
+     main="Figure 8. Statistical Power as a Function of Sample Size",
+     pch=20,
+     col="blue")
+axis(1, at=2*1:25)
+abline(h=0.95)
+```
+As expected, power increases as the sample size increases. We obtain a power of 0.95 around a sample size of 27. This means that over 95% of ANOVA performed with a sample size of 27 will result in a p-value that is less than 0.05. 

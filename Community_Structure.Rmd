@@ -1,0 +1,287 @@
+---
+title: "HW 19: Community Structure"
+author: "Christian Chua"
+date: "`r date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+fig.dim <- 4
+knitr::opts_chunk$set(fig.width=2*fig.dim,
+                      fig.height=fig.dim,
+                      fig.align='center')
+set.seed(24)
+library(lars)
+library(tidyverse)
+library(rstan)
+library(matrixStats)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+# Introduction
+
+The principal investigator has 16S rRNA sequence data on the abundance of 40 microbial taxa (measured 100 times) from a decomposition experiment. They are interested in whether groups of taxa change in abundance together due to some underlying relationship. 
+
+# Data
+
+The 100 timepoints were measured fairly consistently at a rate of roughly 0.00961.  
+
+```{r data, echo=FALSE}
+counts <- read.csv("taxon_counts.xls", header = TRUE)
+
+fit <- lm(time ~ 0 + X, data = counts)
+plot(counts$time, xlab = "timepoint", ylab = "time", main="Rate of sampling")
+abline(0, coef(fit), col="red")
+```
+
+The counts are discrete integers. Looking at the distribution of counts by taxon, it is clear that there are several microbial taxa that do not change significantly in abundance and some that do. 
+
+```{r data_2, echo=FALSE}
+boxplot(counts[,3:42], ylab="counts", las=2, cex.axis=0.90, xlab="microbial taxa", main="Distribution of counts by taxon")
+```
+
+# Analysis
+
+## Stan Model
+
+We created a stan model specifying three communities for this data. A given taxon may belong to more than one community but with different relative abundances. w[i][j] contains the proportion of time point i that is made up of community j. w follows a dirichlet distribution whose parameter is a combination of a normal and exponential distribution. x[i,j] contains the mean abundance of taxon i in community j. x follows a normal distribution whose parameters also follow a normal distribution. Z[i], the expression count for a given taxon i, follows a poisson distribution that is dependent on x and w. 
+
+```{r model, echo=FALSE, cache=TRUE}
+nmf_model <- stan_model(model_code="
+    data {
+      int N; // # samples
+      int L; // # taxa
+      int K; // # clusters
+      int Z[N,L];
+    }
+    parameters {
+      matrix<lower=0>[L,K] x;
+      vector[L] y;
+      simplex[K] w[N];
+      real<lower=0> eta;
+      vector<lower=0>[K] alpha;
+      real<lower=0> d_alpha;
+    }
+    model {
+      for (i in 1:N) {
+          Z[i] ~ poisson(x * w[i]);
+          w[i] ~ dirichlet(d_alpha * alpha);
+      }
+      for (j in 1:K) 
+          { x[,j] ~ normal(y, eta); }
+      y ~ normal(0, 20);
+      alpha ~ normal(0, 1);
+      d_alpha ~ exponential(0.2);
+      eta ~ normal(0, 10);
+    }
+    ")
+```
+We used the dirichlet distribution as the prior distribution for w because it is the conjugate prior to the categorical distribution. Utilizing that relationship simplifies the solution to a closed-form expression for the posterior. 
+
+### Model diagnosis
+
+We then looked at the R-hat convergence diagnostic, which compares the estimates of the model parameters between chains and within chains. If there is sufficient agreement or mixing between chains, then the R-hat value will be closer to one. A typical solution to low mixing would be increasing the number of iterations in the model. We tested the model using 100 for the number of time points, 40 taxa, 3 communities, and a poisson distribution of expression counts.
+
+```{r test_runs, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+nmf <- sampling(nmf_model,
+                data=list(N=100,
+                          L=40,
+                          K=3,
+                          Z=matrix(rpois(4000, 100), ncol=40)),
+                chains=3, iter=1000)
+```
+
+It appears that there was sufficient mixing in the model because the R-hat values for each variable is close to 1 even with 1000 iterations and 3 chains. 
+
+```{r diagnostics 1, echo=FALSE}
+options(max.print=100)
+print(nmf, pars = "x")
+```
+
+## Simulated Data
+
+Next, we tested the model on simulated data. We found in the real data that the mean of the mean expression per taxon was around 80 counts with a mean standard deviation of 15.91. We set the mean count values for each taxon in the simulated data to follow a gamma distribution that yields similar mean values to the real data.
+
+```{r simit, echo=FALSE}
+num_taxa <- 40
+num_communities <- 3
+num_samples <- 100
+
+num_diff_taxa <- 14
+mean_total_expression <- 80.0995
+sd_total_expression <- 15.91342
+
+taxon_names <- paste0("taxon_", apply(matrix(sample(letters, 5*num_taxa, replace=TRUE), nrow=num_taxa), 1, paste, collapse=''))
+stopifnot(length(unique(taxon_names)) == num_taxa)
+```
+```{r simit2, echo=FALSE}
+# x[i,j] contains the mean abundance of taxon i in community j
+x <- matrix(0, nrow=num_communities, ncol=num_taxa)
+colnames(x) <- taxon_names
+# vector of typical expression levels across *all* communities
+x_mean <- rgamma(num_taxa, shape=10, scale=8)
+# which taxa are differentially expressed in which community
+diff_taxon <- sample(0:num_communities, num_taxa, replace=TRUE)
+
+for (k in 1:num_communities) {
+    diffex <- which(diff_taxon == k)
+    x[k,] <- x_mean
+    x[k,diffex] <- x[k,diffex] * runif(length(diffex), min=0, max=3)
+}
+```
+
+### Taxon abundance profiles
+
+We can plot the mean abundance of each taxon in each community.
+
+```{r simit3, fig.width=3*fig.dim, fig.height=1.5*fig.dim, echo=FALSE}
+x_ord <- order(diff_taxon, x_mean)
+matplot(t(x[,x_ord]), type='l', xlab='taxon', ylab='mean expression')
+
+# row.names(t(x[,x_ord]))[x_ord]
+```
+
+We see that there are roughly 10 samples that do have not different mean abundances in any community. There are roughly 12 taxa that are differently abundant in community 1, 9 for community 2, and 9 for community 3.
+
+```{r simit4, fig.width=3*fig.dim, fig.height=2.5*fig.dim, echo=FALSE}
+# layout(1:3)
+# par(mar=c(0,4,0,0))
+# for (k in 1:3) plot(x[k,x_ord], type='l', col=k, ylab='Mean count')
+```
+
+### Community proportions
+
+The pairwise plot of the community proportions of the taxa show clear separation of communities. 
+
+```{r simit5, echo=FALSE, fig.width=3*fig.dim, fig.height=2*fig.dim}
+# w[i,k] is proportion of sample i of cell type k.
+w <- matrix(0, nrow=num_samples, ncol=num_communities)
+for (i in 1:num_samples) {
+    dirich <- rgamma(num_communities, rep(1, num_communities))
+    w[i,] <- dirich/sum(dirich)
+}
+stopifnot(all(abs(rowSums(w) - 1) < 1e-14))
+
+pairs(w, xlim=c(0,1), ylim=c(0,1))
+```
+
+### Abundance per timepoint
+
+A histogram of the total abundance by timepoint reveals the expected poisson distribution. 
+
+```{r simit7, echo=FALSE}
+# y[i] is total counts for timeplot i
+y <- rnorm(num_samples, mean=mean_total_expression, sd=sd_total_expression)
+
+hist(y, main='Abundance by timepoint')
+```
+
+### Abundance visualization over time
+
+The heatmap below shows the average abundance per taxon over time. A darker red color indicates a higher abundance. 
+
+```{r simit8, echo=FALSE}
+# Z[i,j] is read counts of sample i for gene j
+
+mean_Z <- (w %*% x)
+
+mean_Z <- y * mean_Z / rowSums(mean_Z)
+stopifnot(all(abs(y - rowSums(mean_Z)) < 1e-8))
+Z <- rpois(length(mean_Z), lambda=mean_Z)
+dim(Z) <- dim(mean_Z)
+
+# order samples by proportion
+w_ord <- order(apply(w, 1, which.max), rowMaxs(w))
+
+Znorm <- Z / colMeans(Z)[col(Z)]
+Znorm <- Znorm / rowMeans(Znorm)
+image(t(Znorm[w_ord,x_ord]), xlab='taxon', ylab='timepoint', main="mean abundance per taxon over time")
+```
+
+### Fitting the model to the simulation data
+
+Using the ```optimizing``` function, we can find a maximum posterior estimate for each parameter in the stan model using the simulation data. Comparing the posterior estimate for w with the actual simulation data by looking at the covariances reveals close agreement. 
+
+```{r fit_sim1, cache=TRUE, dependson=c("simit10"), echo=FALSE}
+fit_sim1 <- optimizing(nmf_model,
+                data=list(N=num_samples,
+                          L=num_taxa,
+                          K=num_communities,
+                          Z=Z))
+
+opt_w <- fit_sim1$par[grepl("^w", names(fit_sim1$par))]
+dim(opt_w) <- c(num_samples, num_communities)
+cor(w, opt_w)
+```
+Similarly, for x, there is less but still really good agreement. 
+
+```{r results3, echo=FALSE}
+opt_x <- fit_sim1$par[grepl("^x\\[", names(fit_sim1$par))]
+dim(opt_x) <- c(num_communities, num_taxa)
+cor(t(x), t(opt_x))
+```
+## Real data
+
+Now, we perform the ```optimizing``` function on the stan model with the real data.
+
+```{r real_data, echo=FALSE}
+fit_real <- optimizing(nmf_model,
+                data=list(N=nrow(counts),
+                          L=ncol(counts)-2,
+                          K=3,
+                          Z=counts[,3:42]))
+```
+
+### Taxon abundance profiles
+
+Looking at the taxon abundance per community shows that there is a handful of taxa that are differential abundant in each community. However, compared to the simulation data, the majority of the taxa have the same abundance in each community.
+
+```{r real1, fig.width=3*fig.dim, fig.height=1.5*fig.dim, echo=FALSE}
+ropt_x <- fit_real$par[grepl("^x", names(fit_real$par))]
+ropt_x <- t(cbind(ropt_x[1:40],ropt_x[41:80],ropt_x[81:120]))
+colnames(ropt_x) <- colnames(counts[,3:42])
+x_mean_real <- colMeans(ropt_x)
+
+x_ord_real <- order(x_mean_real)
+x_ord_real_2 <- c(
+  35, 8, 7, 31, 19, 22, 10, 21, 23, 29, 
+  16, 20, 4, 1, 17, 2, 9, 25, 13, 6, 
+  38, 30, 26, 34, 39, 27, 33, 28, 36, 40, 
+  14, 24, 18, 3, 15, 12, 5, 11, 37, 32)
+
+matplot(t(ropt_x[,x_ord_real_2]), type='l', xlab='taxon', ylab='mean expression')
+
+# row.names(t(x[,x_ord]))[x_ord]
+```
+Next, the pairwise plot of the community proportions of the taxa show three clusters. In each pairwise comparison, for example var 1 (community 1) versus var 2 (community 2), there are two clusters in the bottom left corner corresponding to communtiy 1 and community 2, respectively. The cluster in the center are the taxa that are not differentially abundant (in any community). There is better separation in the real data than the simulated data likely due to the tighter distributions of the variables than what we simulated.
+
+```{r real_results1, echo=FALSE}
+ropt_w <- fit_real$par[grepl("^w", names(fit_real$par))]
+ropt_w <- t(cbind(ropt_w[1:100],ropt_w[101:200],ropt_w[201:300]))
+dim(ropt_w) <- c(num_samples, num_communities)
+cor(w, ropt_w)
+
+pairs(ropt_w, xlim=c(0,1), ylim=c(0,1))
+```
+
+Lastly, we looked at the heatmap showing the mean abundance of each taxon over time. Both axes were normalized. A darker red color indicates a higher abundance. The order of the taxa are the same as the taxon abundance per community plot at the beginning of this subsection. Again, we see three communities with a majority of taxa not changing over time. It appears red community was highly abundant at the beginning of the experiment followed by the green community and then the black community. 
+
+```{r real_results3, echo=FALSE}
+# order samples by proportion
+z_real <- as.matrix(counts[,3:42])
+
+Znorm_real <- z_real / colMeans(z_real)[col(z_real)]
+Znorm_real <- Znorm_real / rowMeans(Znorm_real)
+image(t(Znorm_real[,x_ord_real_2]), xlab='taxon', ylab='timepoint', main="mean abundance per taxon over time")
+```
+
+# Conclusion
+
+Using the stan package in R, we created a statistical model to reach several conclusions about abundance of microorganisms in a decomposition experiment. We made several assumptions about the distribution of the variables. In particular, we assumed that the proportion of taxa that make up a community at any given time point follows a dirichlet distribution, a conjugate prior to a categorical distribution. This simplified the posterior estimate to be closed-form. We tested the validity of the model using sampling and then simulating data. 
+
+The model was able to successfully find three communities in the simulated data. A matrix of covariance showed high agreement between the simulated data and the maximu posterior prior obtained by the  ```optimizing``` function. When the model was applied to the real data, the separation of each community by the abundance was even more pronounced. 
+
+Biologically, this pattern makes sense as some microorganism depends on (or is toxic to) another's metabolic byproducts. It is unlikely that taxon between communities respond to the some common underlying variable because they have clear separation in their abundances over time. The majority of the taxa are not differentially abundant. 
+
+Future directions include researching those differently abundant taxa and whether there have been relationships between taxon within a community described previously in literature. 

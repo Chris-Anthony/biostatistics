@@ -1,0 +1,251 @@
+---
+title: 'Homework 3: Testing for heterogeneity'
+author: "Christian Chua"
+date: "`r date()`"
+output:
+  pdf_document: default
+  html_document:
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+fig.dim <- 6 
+knitr::opts_chunk$set(echo=FALSE,
+                      fig.width=2*fig.dim,
+                      fig.height=fig.dim,
+                      fig.align='center')
+# set the random seed, so that you get exactly the same
+# output from random functions each time you run the code
+set.seed(23)
+library(matrixStats)
+```
+
+# Introduction
+
+A research group is interested in studying the immune response to different types of seasonal flu. They have collected data from the blood of people with the flu (but healthy otherwise). Specifically, they determined (a) the strain of flu, (b) the strength of the immune response (in units of pg/mL of interleukin-1$\beta$), and (c) the person's genoytpe for interleukin-1$\beta$. It is known from previous studies that the mean immune response differs by the genotype of this immune-regulating gene. In order to determine how the mean strength of the immune response is dependent on the flu strains, we will perform a permutation test and an Analysis of Variance (ANOVA). In particular, the ANOVA will consider if there are significant interaction effects between the flu strain and the person's interleukin-1$\beta$ genotype. 
+
+For more information, please see [https://nextstrain.org/flu](nextflu.org).
+
+# Hypotheses
+
+1. The mean strength of the immune response (measured using interleukin-1$\beta$ concentration) differs by flu strains.
+2. Some strains induce stronger, or weaker, responses.
+3. Natural variation in immune responses (suggested by interleukin-1$\beta$ genotype) also contribute to the strength of the immune response.
+
+The null hypotheses are that there are no differences in mean strength of the immune response between strains and between genotypes and there are no interactions between these two factors.
+
+# Data
+
+The research group has provided the data with 2000 samples. There are 20 flu strains and 3 interleukin-1$\beta$ genotypes represented. Figures 1 and 2 give the number of samples that had a given strain or genotype, respectively.
+
+```{r, results='hide'}
+# Set working directory
+setwd("C:/Users/chris/Desktop/Bi610/HW/HW3/")
+
+# Read CSV file and explore contents
+flu_tsv <- read.table("flu.tsv", header=T, sep=" ")
+
+# Change the strain and genotype columns to factors
+flu_tsv$strain <- as.factor(flu_tsv$strain)
+flu_tsv$genotype <- as.factor(flu_tsv$genotype)
+
+# Determine the levels of strain and genotyoe
+levels(flu_tsv$strain)
+levels(flu_tsv$genotype)
+
+# plot the counts by strain and by genotype
+op <- par(no.readonly = TRUE)
+
+par(mar=c(8, 4, 2, 2) + 0.1, mfrow=c(1,2))
+categories_1 <- levels(flu_tsv$strain)
+barplot(table(flu_tsv$strain), xaxt="n", xlab="", main="Figure 1. Number of samples per strain")
+axis(1, at=1:20, labels=categories_1, las = 2, cex.axis = 1)
+
+categories_2 <- levels(flu_tsv$genotype)
+barplot(table(flu_tsv$genotype), xaxt="n", xlab="", main="Figure 2. Number of samples per interleukin-1B genotype")
+axis(1, at=1:3, labels=categories_2, las = 2, cex.axis = 1)
+
+#reset settings
+par(op)
+```
+
+There is an uneven distribution of flu strains with A1b/102K being most prevalent followed by A1b/117W and A1b/119F. This is consistent with how flu strains vary seasonal and is dependent on the previous year's distribution of flu strains.  However, the distribution of immune-regulating gene genotypes is fairly even.  
+
+Figures 3 and 4 show the distribution of immune response delineated by strain and interleukin-1$\beta$ genotype. 
+
+```{r}
+# Plot responses are a linear model of the two factors
+op <- par(no.readonly = TRUE)
+
+par(mar=c(8, 4, 2, 2) + 0.1, mfrow=c(1,2))
+plot(response ~ strain, data=flu_tsv, xaxt="n", xlab="", ylab="immune response (pg/mL interleukin-1B)", main="Figure 3. Immune response delineated by strain")
+axis(1, at=1:20, labels=categories_1, las = 2, cex.axis = 1)
+
+plot(response ~ genotype, data=flu_tsv, xaxt="n", xlab="", ylab="immune response (pg/mL interleukin-1B)", main="Figure 4. Immune response delineated\n by interleukin-1B genotype")
+axis(1, at=1:3, labels=categories_2, las = 2, cex.axis = 1)
+
+#reset settings
+par(op)
+```
+
+It appears that there is a change in immune response depending on the strain and interleukin-1$\beta$ genotype. We are going to perform in-depth analyses on how the combination of these two factors affect immune response. 
+
+# Analysis
+
+### Interaction Plot
+
+We first created an interaction plot for mean immune response for the dataset (Figure 5).
+```{r, message=FALSE, warning=FALSE, results="hide"}
+library(tidyverse)
+
+(mean_flu <- flu_tsv %>%
+  group_by(strain, genotype) %>%
+  summarise(
+    mean_response = mean(response, na.rm = TRUE)
+  ) %>%
+  drop_na())
+
+(sd_flu <- flu_tsv %>%
+  group_by(strain, genotype) %>%
+  summarise(
+    sd_response = sd(response, na.rm = TRUE)
+  ) %>%
+  drop_na())
+
+clean_flu <- merge(mean_flu, sd_flu)
+
+# Creating the plot
+clean_flu %>% 
+  ggplot(aes(x = strain, 
+             y = mean_response, 
+             color = genotype)) +
+  geom_line(aes(group = genotype)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_response - sd_response, 
+                      ymax = mean_response + sd_response),
+                width = .1, position=position_dodge(0.2)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title="Figure 5. Interaction plot for mean immune response",
+       x="Strain", y="Mean immune response (pg/mL interleukin-1B)")
+```
+The interaction plot shows how the relationship between the influenza strain and mean immune response measured by the concentration of interleukin-1$\beta$ is dependent on the genotype of interleukin-1$\beta$. Each line represents a different genotype of interleukin, where the datapoints are the means for each strain within that genotype subgroup. The bars indicate one standard deviation. In general, interleukin genotype A4 has the lowest mean immune responses, while genotype D13 has the highest with genotype C18 somewhere in between.
+
+If there was no interaction between the influenza strain and the genotype of interleukin, we should expect to see parallel lines. However, that is not the case. Interleukin genotype C18 (in blue) sometimes has a higher mean immune response than genotype D13 (in green), specifically for strains A1b\\140O, A1b\\151X, A1b\\167Y, A1b\\177B, and A1b\\190J. Another notable finding is that several combinations of strain and genotype yield comparable mean immune response. Specifically, for strain A1b\\140O, there is little difference in the mean immune response between genotypes. 
+
+In order to evaluate whether the interaction effects are significant, we performed a permutation test and ANOVA. 
+
+### Permutation Test
+
+Using the standard deviation of strain means, averaged across genotypes as our test statistic in a permutation test, we quantified the variation in mean immune response between strains subgrouped by genotype. We subsetted the dataset into three groups based on genotype to control for this factor. Then, we took the means of the immune response for each strain within each genotype subgroup. Next, we found the standard deviation of the means within each genotype subgroup and finally, we took the average of the standard deviations, which came out to be 3.98.
+
+Within each genotype subgroup, if there was no meaningful difference in mean immune response between influenza strains, then randomly shuffling the immune reponse value within each genotype subgroup will not change anything. We shuffled the values in the response column and calculated the test statistic described in the preceeding paragraph. We performed this sampling 1000 times and compared the test statistics. The p-value for the permutation test is the proportion of test statistics generated by our shuffling that is greater than the true value calculated above. The p-value was:
+
+```{r, message=FALSE, warning=FALSE, results="hide"}
+genotype_A4 <- filter(flu_tsv, genotype == "A4")
+genotype_C18 <- filter(flu_tsv, genotype == "C18")
+genotype_D13 <- filter(flu_tsv, genotype == "D13")
+
+(mean_A4 <- genotype_A4 %>%
+  group_by(strain, genotype) %>%
+  summarise(
+    mean_response = mean(response, na.rm = TRUE)
+  ) %>%
+  drop_na())
+sd_A4 <- sd(mean_A4$mean_response)
+
+(mean_C18 <- genotype_C18 %>%
+  group_by(strain, genotype) %>%
+  summarise(
+    mean_response = mean(response, na.rm = TRUE)
+  ) %>%
+  drop_na())
+sd_C18 <- sd(mean_C18$mean_response)
+
+(mean_D13 <- genotype_D13 %>%
+  group_by(strain, genotype) %>%
+  summarise(
+    mean_response = mean(response, na.rm = TRUE)
+  ) %>%
+  drop_na())
+sd_D13 <- sd(mean_D13$mean_response)
+
+true_mean <- mean(c(sd_A4, sd_C18, sd_D13))
+
+perm_test <- replicate(1000, {
+  genotype_A4$response <- sample(genotype_A4$response)
+  genotype_C18$response <- sample(genotype_C18$response)
+  genotype_D13$response <- sample(genotype_D13$response)
+  
+  (mean_A4 <- genotype_A4 %>%
+  group_by(strain, genotype) %>%
+  summarise(
+    mean_response = mean(response, na.rm = TRUE)
+  ) %>%
+  drop_na())
+  sd_A4 <- sd(mean_A4$mean_response)
+
+  (mean_C18 <- genotype_C18 %>%
+    group_by(strain, genotype) %>%
+    summarise(
+      mean_response = mean(response, na.rm = TRUE)
+    ) %>%
+    drop_na())
+  sd_C18 <- sd(mean_C18$mean_response)
+  
+  (mean_D13 <- genotype_D13 %>%
+    group_by(strain, genotype) %>%
+    summarise(
+      mean_response = mean(response, na.rm = TRUE)
+    ) %>%
+    drop_na())
+  sd_D13 <- sd(mean_D13$mean_response)
+
+  fake_mean <- mean(c(sd_A4, sd_C18, sd_D13))
+})
+```
+```{r}
+mean(perm_test >= true_mean)
+```
+None of the shuffling permutations resulted in a statistics that was higher than the actual value. Therefore, we reject the null hypothesis that there is no variation in mean immune response between strains by genotype. The variation in mean immune response between strains by genotype is highly statistically significant ($p$ < 0.001, permutation test).
+
+### ANOVA
+
+Lastly, we performed an analysis of variance by creating a linear model which accounts for the interaction of effects between influenza strain and interleukin-1$\beta$ genotype. This is possible because the assumptions of ANOVA are satisfied. There is a normally distributed population (figure 3), all populations have roughly the same variance (error bars, figure 5), and all samples are independent of each other. 
+
+```{r}
+genotype_A4 <- filter(flu_tsv, genotype == "A4")
+genotype_C18 <- filter(flu_tsv, genotype == "C18")
+genotype_D13 <- filter(flu_tsv, genotype == "D13")
+
+real_flu <- rbind(genotype_A4, genotype_C18, genotype_D13)
+
+anova_true <- anova(lm(response ~ strain * genotype, data=real_flu))
+true_F <- anova_true[["F value"]][1]
+
+anova_true
+```
+We see that the F-value of the interaction effect ("strain:genotype") is significant (Pr(>F) < 0.001). This means that the differences in mean immune responses between influenza strains depend on the genotype of interleukin-1$\beta$. 
+
+We can likewise perform a permutation test using ANOVA by shuffling the response values between strains within each genotype subgroup and performing ANOVA multiple times. We performed the sampling 1000 times. The p-value was:
+
+```{r}
+perm_F_multiple <- replicate(1000, {
+  genotype_A4$response <- sample(genotype_A4$response)
+  genotype_C18$response <- sample(genotype_C18$response)
+  genotype_D13$response <- sample(genotype_D13$response)
+  fake_flu <- rbind(genotype_A4, genotype_C18, genotype_D13)
+  anova(lm(response ~ strain * genotype, data=fake_flu))[["F value"]][1]
+})
+
+mean(perm_F_multiple >= true_F)
+```
+There is strongly statistically significant heterogeneity in mean immune responses between strains when controlling for genotype ($p$ < 0.001, permutation test). Because the interaction effects between influenza strain and interleukin-1$\beta$ are significant, we cannot interpret the main effects of either factor on the immune response without considering the interaction effects. 
+
+# Conclusion
+
+Based on these results, the mean strength of the immune response (as measured using interleukin-1$\beta$ concentration) does differ by flu strains (figure 5 and Pr(>F) < 0.001, ANOVA). Some strains seem to have stronger responses, such as A1b\\119F and A1b\\137M, while some seem to have weaker responses, such as A1b\\133N and A1b\\142Q. However, it should be noted that the standard deviations are relatively large compared to the means.
+
+Interleukin-1$\beta$ genotype also contributes to the mean strength of the immune response. The interaction effect is not uniform across influenza strains. Genotype C18 elevates the immune response for certains strains, while genotype D13 decreases the immune response in other strains (Section Analysis, Interaction Plot). Both the permutation test and ANOVA indicate that these findings are significant. 
+

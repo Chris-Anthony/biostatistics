@@ -1,0 +1,242 @@
+---
+title: "HW 18: Expression PCA"
+author: "Christian Chua"
+date: "`r date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+fig.dim <- 4
+knitr::opts_chunk$set(fig.width=2*fig.dim,
+                      fig.height=fig.dim,
+                      fig.align='center')
+set.seed(23)
+library(matrixStats)
+library(tidyverse)
+options(digits=2)
+```
+
+# Introduction
+
+We were provided gene expression data for 15,847 genes in 84 threespine stickleback fish. The experiment is described in the image below. 
+
+![](stickleback.png)
+
+The principal investigator is intersted in the major sources of expression variation and in particular which of the variables in the metadata are most strongly associated with overall differences in variation. In order to find this out, we preform a principal component analysis (PCA).
+
+# Data
+
+There are two populations of stickleback, oceanic ("OC") and freshwater ("FW"), split into families. Members of each family were either subjected to conventional treatment or germ-free treatment in flasks. This method was repeated for one OC family and one FW family. The full distribution of individuals is described in the summary table below.
+
+```{r data, echo=FALSE}
+counts <- read.delim("CVvsGF_RNAseq_CPM.tsv.txt", header = TRUE, sep = "\t")
+metadata <- read.delim("CVvsGF_RNAseq_Metadata.tsv.txt", header = TRUE, sep = "\t")
+
+metadata$Population <- as.factor(metadata$Population)
+metadata$Family <- as.factor(metadata$Family)
+metadata$Treatment <- as.factor(metadata$Treatment)
+metadata$Sex <- as.factor(metadata$Sex)
+metadata$Flask <- as.factor(metadata$Flask)
+summary(metadata)
+
+colnames(metadata)[1] <- "sample"
+```
+
+Looking at the gene expression values for the 1st two libraries, we see that there is a large distribution of values from 0 to over 10000 (see the  library 1A_02 vs. library 5A_01 plot below). 
+
+```{r plot_untransformed, echo = FALSE}
+colnames(counts)[c(6:ncol(counts))] <- metadata$sample
+
+plot(counts$"1A_02", counts$"5A_01",
+     main="Library 1A_02 vs. Library 5A_01",
+     xlab="1A_02 counts",
+     ylab="5A_01 counts",
+     axes=FALSE,
+     pch=1, cex=0.75, col="blue")
+axis(1, pos=0)
+axis(2, pos=0)
+abline(0, 1, col="red")
+
+
+sb_matrix <- counts[,metadata$sample]
+rownames(sb_matrix) <- counts$Gene_ID
+
+```
+
+In order for the genes with large expression values from not dominating the PCA, we log-transformed the data. To log-transform the data, it was necessary to add one to every value so that counts of zero are not transformed negative infinity. The value of the data will now refer to the relative variation.
+
+
+```{r plot_transformed, echo = FALSE}
+# Log-Transform the data
+sb_matrix <- log10(sb_matrix+1)
+
+# pairs(sb_matrix[,2:6])
+
+plot(sb_matrix$"1A_02", sb_matrix$"5A_01",
+     main="Log-transformed",
+     xlab="log 1A_02 counts",
+     ylab="log 5A_01 counts",
+     axes=FALSE,
+     pch=1, cex=0.75, col="blue")
+axis(1, pos=0)
+axis(2, pos=0)
+abline(0, 1, col="red")
+
+sb_matrix <- t(sb_matrix)
+```
+For a majority of genes, the expression levels should be roughly the same between the libraries and their counts should plot along the y=x line indicated in red. Because the majority of the counts fall along the y=x line, the coverage for library 1A_02 is roughly the same as for 1A_03. If this was not the case, we would need to normalize the gene counts for each library by dividing each count either by the upper quartile of non-zero counts or by the median of non-zero counts.
+
+Next, we removed any outliers or genes that had zero counts. 
+
+```{r remove_data, echo = FALSE}
+nzeroes <- colSums(sb_matrix==0)/nrow(sb_matrix)*100
+nzeroes <- as.data.frame(nzeroes)
+to_keep <- row.names(subset(nzeroes, nzeroes <= 1))
+
+test_matrix <- sb_matrix[,to_keep]
+test_matrix <- t(test_matrix)
+
+too_high <- subset(test_matrix, rowSums(test_matrix>4) > 0)
+too_high <- which( row.names(test_matrix) %in% row.names(too_high) )
+
+test_matrix <- t(test_matrix[-too_high,])
+test_matrix <- t(test_matrix)
+
+plot(test_matrix[,1], test_matrix[,49],
+     main="Without outliers",
+     xlim = c(0,4),
+     xlab="log 1A_02 counts",
+     ylab="log 5A_01 counts",
+     axes=FALSE,
+     pch=1, cex=0.75, col="blue")
+axis(1, pos=0)
+axis(2, pos=0)
+abline(0, 1, col="red")
+
+test_matrix <- t(test_matrix)
+# sort(nzeroes, decreasing = TRUE)
+```
+We retained 14972 genes out of the original 15847 for PCA. 
+
+# Analysis
+
+In order to perform a spectral decomposition using ```princomp```, there needs to be at least the same number of observations as variables. Therefore, we opted to use singular value decomposition in ```prcomp``` instead. The difference is that the calculation is not done using the eigen on the covariance matrix. Generally, the accuracy from ```prcomp``` is more reliable. We centered but did not scale the data in ```prcomp``` as we already log-transformed the data. 
+
+```{r prcomp, echo = FALSE}
+sb_pca <- prcomp(test_matrix, center = TRUE, scale = FALSE)
+# summary(sb_pca)
+
+eigenvalues <- sb_pca$sdev^2
+eigenvalues <- tibble(PC = factor(1:length(eigenvalues)), 
+                         variance = eigenvalues) %>% 
+  mutate(pct = variance/sum(variance)*100) %>% 
+  mutate(pct_cum = cumsum(pct))
+
+eigenvalues[1:30,] %>% 
+  ggplot(aes(x = PC)) +
+  geom_col(aes(y = pct)) +
+  geom_line(aes(y = pct_cum, group = 1)) + 
+  geom_point(aes(y = pct_cum)) +
+  labs(x = "Principal component", y = "Fraction variance explained")
+
+pc_scores <- sb_pca$x
+pc_scores <- pc_scores %>% as_tibble(rownames = "sample")
+# pc_scores
+```
+
+From the elbow plot or scree plot, we see that the roughly 50% of the variation in the data is explained by the first four principal components. We then plotted the samples along different combinations of the 1st four PCs. Black is the "FW" population and red is the "OC" population. Conventional treatment is indicated by a circle, while germ-free treatment is indicated by an inverted triangle. The following plot differentiates the samples by sex (females are black and males are red).
+
+```{r PC_plots, echo=FALSE}
+pairs(sb_pca$x[,1:4], col=metadata$Population, pch = c(1, 6)[as.numeric(metadata$Treatment)])
+pairs(sb_pca$x[,1:4], col=metadata$Sex)
+# pairs(sb_pca$x[,1:4], col=metadata$Treatment, pch = c(1, 6)[as.numeric(metadata$Population)])
+```
+
+Samples with a similar gene expression profile are grouped together. We can immediately see that there is a clear separation by population. However, there is not as clear a separation for treatment nor for sex. 
+
+```{r top_genes, echo=FALSE}
+pc_loadings <- sb_pca$rotation
+pc_loadings <- pc_loadings %>% 
+  as_tibble(rownames = "gene")
+
+# head(sort(abs(sb_pca$rotation[,1]), decreasing = TRUE), 20)
+
+top_genes <- pc_loadings %>% 
+  select(gene, PC1, PC2) %>%
+  pivot_longer(matches("PC"), names_to = "PC", values_to = "loading") %>% 
+  group_by(PC) %>% 
+  arrange(desc(abs(loading))) %>% 
+  slice(1:10) %>% 
+  pull(gene) %>% 
+  unique()
+
+top_loadings <- pc_loadings %>%
+  filter(gene %in% top_genes)
+
+loadings_plot <- ggplot(data = top_loadings) +
+  geom_segment(aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.1, "in")),
+               colour = "brown") +
+  geom_text(aes(x = PC1, y = PC2, label = gene),
+            nudge_y = 0.005, size = 3) +
+  scale_x_continuous(expand = c(0.02, 0.02))
+
+loadings_plot
+
+top_genes_2 <- pc_loadings %>% 
+  select(gene, PC3, PC4) %>%
+  pivot_longer(matches("PC"), names_to = "PC", values_to = "loading") %>% 
+  group_by(PC) %>% 
+  arrange(desc(abs(loading))) %>% 
+  slice(1:10) %>% 
+  pull(gene) %>% 
+  unique()
+
+top_loadings_2 <- pc_loadings %>%
+  filter(gene %in% top_genes_2)
+
+loadings_plot_2 <- ggplot(data = top_loadings_2) +
+  geom_segment(aes(x = 0, y = 0, xend = PC3, yend = PC4),
+               arrow = arrow(length = unit(0.1, "in")),
+               colour = "brown") +
+  geom_text(aes(x = PC3, y = PC4, label = gene),
+            nudge_y = 0.005, size = 3) +
+  scale_x_continuous(expand = c(0.02, 0.02))
+
+loadings_plot_2
+```
+The loading plots show how the top genes contribute to the principal components 1 through 4. The top genes are described as the top ten genes with the greatest loading for that principal component. For PC1 and PC2, there 16 unique genes described below. And for PC3 and PC4, there are 19 unique genes.
+
+```{r top_genes_2, echo=FALSE}
+top_genes
+```
+These genes probably correspond to the physiological differences between the oceanic and freshwater lines. For example, the high salinity in the ocean would necesitate a system to maintain the loss of internal body fluids through the gills due to osmosis. Furthermore, the oceanic and freshwater lines would have other different environmental factors such as different predators and prey. 
+
+Even when we subset the data for only one population, the pairs plot still does not reveal a separation based on treatment (below). This would suggest that there is no difference in the gene expression levels based on treatment. 
+
+```{r subset, echo=FALSE}
+metadata_FW <- subset(metadata, Population=="FW")
+subset_FW <- test_matrix[metadata_FW$sample,]
+
+FW_pca <- prcomp(subset_FW, center = TRUE, scale = FALSE)
+# summary(sb_pca)
+
+# EV_FW <- FW_pca$sdev^2
+# EV_FW <- tibble(PC = factor(1:length(EV_FW)), 
+#                          variance = EV_FW) %>% 
+#   mutate(pct = variance/sum(variance)*100) %>% 
+#   mutate(pct_cum = cumsum(pct))
+
+# EV_FW[1:30,] %>% 
+#   ggplot(aes(x = PC)) +
+#   geom_col(aes(y = pct)) +
+#   geom_line(aes(y = pct_cum, group = 1)) + 
+#   geom_point(aes(y = pct_cum)) +
+#   labs(x = "Principal component", y = "Fraction variance explained")
+
+pairs(FW_pca$x[,1:4], col=metadata_FW$Treatment)
+```
+
+# Conclusion
+
+PCA revealed gene expression differences between the oceanic and freshwater lines of stickleback. Interestingly, there were no differences due to sex or to treatment even when looking at one population only. It would be wise in this case to revisit the experimental design to ensure that there was no contamination or confounding factors as there was no obvious gene expression differences between treatments. For future directions, we can take the top genes identified and conduct a gene ontology or KEGG analysis to see if these genes correspond to specific physicological mechanism or pathway. Another analysis, we could perform is also normalizing the data. If the gene expression differences between treatment is subtle, sample to sample variation (e.g. depth of sequence coverage) may make it difficult to observe those differences. 
